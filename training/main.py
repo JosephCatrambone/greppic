@@ -13,7 +13,7 @@ from tqdm import tqdm
 from torch.utils.tensorboard import SummaryWriter
 
 #from datasets.sketch_to_picture_dataset import SketchToPictureDataset
-from datasets.ocr import TextDetectionDataset
+from dataset import TextDetectionDataset
 from model import UNet
 
 #wandb.init(project="drawing_to_art", entity="josephc")
@@ -24,7 +24,7 @@ NUM_WORKERS = 4
 LEARNING_RATE = 0.001
 EPOCHS = 3
 BATCH_SIZE = 16
-CHANGENOTES = "Bugfix in validation loss. Add validation set."
+CHANGENOTES = "Model performs admirably on light text over images, but has trouble on darker text and background text.  Want to try and fit to the masks better."
 
 
 def record_run_config(filename, output_dir) -> int:
