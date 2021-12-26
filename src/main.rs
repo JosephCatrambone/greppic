@@ -14,6 +14,14 @@ struct Args {
 	/// Number of times to greet
 	#[clap(short, long, default_value_t = 1)]
 	count: u8,
+
+	/// Minimum confidence for an image to be considered to 'have' text.  Min: 0, Max: 100.
+	#[clap(short, long, default_value_t = 70)]
+	minconf: u8,
+
+	/// Overlap text scan
+	#[clap(short, long, default_value_t = false)]
+	overlap_scan: bool,
 }
 
 // Level of verbosity, default=0 (print only text)

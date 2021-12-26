@@ -21,10 +21,10 @@ from model import UNet
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 MODEL_NAME = "ocr_text_detect"
 NUM_WORKERS = 4
-LEARNING_RATE = 0.001
-EPOCHS = 3
+LEARNING_RATE = 0.0001
+EPOCHS = 10
 BATCH_SIZE = 16
-CHANGENOTES = "Model performs admirably on light text over images, but has trouble on darker text and background text.  Want to try and fit to the masks better."
+CHANGENOTES = "Going to 50/50 MSCOCO and synethic.  Dropping learning rate and increasing epochs.  Need to change loss function and maybe output channels."
 
 
 def record_run_config(filename, output_dir) -> int:
@@ -42,7 +42,7 @@ def record_run_config(filename, output_dir) -> int:
 
 def export_model(model, input_channels, input_height, input_width, filename):
 	model.eval()
-	x = torch.randn(1, input_channels, input_height, input_width, requires_grad=True)
+	x = torch.randn(1, input_channels, input_height, input_width, requires_grad=True).to(DEVICE)
 	_output = model(x)
 	torch.onnx.export(
 		model,
@@ -76,9 +76,6 @@ def train(dataset, model, optimizer, loss_fn, summary_writer=None, validation_se
 			loss.backward()
 			optimizer.step()
 
-			# Log status.
-			total_epoch_loss += loss.item()
-
 			if summary_writer and batch_idx % 100 == 0:
 				# Save sample images.
 				input_grid = torchvision.utils.make_grid(data)
@@ -94,11 +91,11 @@ def train(dataset, model, optimizer, loss_fn, summary_writer=None, validation_se
 					preds = model(validation_set[0])
 					val_loss = loss_fn(preds, validation_set[1])
 					validation_loss = val_loss.item()
-					validation_input_grid = torchvision.utils.make_grid(validation_set[0][:16,:,:,:])
+					validation_input_grid = torchvision.utils.make_grid(validation_set[0])
 					summary_writer.add_image("Validation Input Grid", validation_input_grid, step)
-					validation_target_grid = torchvision.utils.make_grid(validation_set[1][:16,:,:,:])
+					validation_target_grid = torchvision.utils.make_grid(validation_set[1])
 					summary_writer.add_image("Validation Target Grid", validation_target_grid, step)
-					validation_output_grid = torchvision.utils.make_grid(preds[:16])
+					validation_output_grid = torchvision.utils.make_grid(preds)
 					summary_writer.add_image("Validation Output Grid", validation_output_grid, step)
 					model.train()
 
@@ -107,12 +104,12 @@ def train(dataset, model, optimizer, loss_fn, summary_writer=None, validation_se
 				#	summary_writer.add_histogram(name, weight, step)
 				#	summary_writer.add_histogram(f'{name}.grad', weight.grad, step)
 
-				summary_writer.add_scalars('Losses', {"Last Training Loss": loss.item(), "Running Loss": total_epoch_loss, "Validation Loss": validation_loss}, step)
-				total_epoch_loss = 0.0
+				summary_writer.add_scalars('Losses', {"Last Training Loss": loss.item(), "Validation Loss": validation_loss}, step)
 				summary_writer.flush()
-
-		torch.save(model.state_dict(), f"models/{MODEL_NAME}_{epoch_idx}")
-		#export_model(model, 1, 128, 128, f"models/{MODEL_NAME}_{epoch_idx}.onnx")
+		torch.save(model.state_dict(), f"checkpoints/{MODEL_NAME}_{epoch_idx}")
+	print("Done!  Breakpoint to save:")
+	breakpoint()
+	#export_model(model, 1, 128, 128, f"models/{MODEL_NAME}_{epoch_idx}.onnx")
 
 
 def main(model_start_file=None):
@@ -133,7 +130,7 @@ def main(model_start_file=None):
 		#transforms.ToTensor(),  # Don't do a ToTensor conversion at the end.
 	])
 
-	dataset = TextDetectionDataset(base_image_folder=f"datasets\\text_images_mscoco_2014\\no_text\\", font_directory=f"datasets\\fonts\\*.ttf", target_width=256, target_height=256)
+	dataset = TextDetectionDataset(target_width=256, target_height=256)
 	training_loader = torch.utils.data.DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=NUM_WORKERS, pin_memory=True)
 
 	# Set up summary writer and record run stats.
@@ -146,9 +143,9 @@ def main(model_start_file=None):
 	summary_writer.add_graph(model, torch.Tensor(numpy.zeros((1,3,dataset.target_height,dataset.target_width))).to(DEVICE))
 
 	# Get a validation set.
-	validation_images, validation_masks = dataset.make_validation_set(32)
-	validation_images = torch.Tensor(numpy.asarray([numpy.asarray(img) / 255.0 for img in validation_images])).permute(0, 3, 1, 2).to(device=DEVICE)
-	validation_masks = torch.Tensor(numpy.asarray([numpy.asarray(mask) / 255.0 for mask in validation_masks])).unsqueeze(1).to(device=DEVICE)
+	validation_images, validation_masks = dataset.make_validation_set()
+	validation_images = validation_images.permute(0, 3, 1, 2).to(device=DEVICE)
+	validation_masks = validation_masks.unsqueeze(1).to(device=DEVICE)
 
 	# Train
 	train(training_loader, model, optimizer, loss_fn, summary_writer=summary_writer, validation_set=(validation_images, validation_masks))
