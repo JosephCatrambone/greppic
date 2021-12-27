@@ -11,17 +11,21 @@ from PIL import Image, ImageDraw, ImageFont, ImageFilter
 from torch.utils.data import Dataset
 
 
-class TextDetectionDataset(Dataset):
+class BaseTextDataset(Dataset):
 	def __init__(self, target_width: int = 128, target_height: int = 128):
-		super(TextDetectionDataset, self).__init__()
+		super(BaseTextDataset, self).__init__()
 		self.resize_op = transforms.Resize(size=[target_height, target_width])
 		self.target_width = target_width
 		self.target_height = target_height
 		self.font_choices = None
 		self.font_directory = "fonts/*.*tf"
-		self.font_sizes = [12, 14, 16, 24, 32, 48]
+		self.font_sizes = [12, 14, 16, 24, 32, 48, 72]
 		self.text_noise = 0.1
 		self.downsample_image_before_crop = False
+		self.random_text_translation = True
+		self.random_text_rotation = True
+		self.random_text_length = 17
+		self.random_text_mask_dilation = 5
 
 		with open(os.path.join("text_images_mscoco_2014", "image_data_by_name.json"), 'rt') as fin:
 			self.img_mask_data = json.load(fin)
@@ -42,7 +46,7 @@ class TextDetectionDataset(Dataset):
 
 	def __getitem__(self, index):
 		if index >= len(self.alltext_images):
-			img, mask = self.generate_image(index % len(self.textless_images))
+			img, mask, _, _ = self.generate_image_mask_pair(index % len(self.textless_images))
 		else:
 			img, mask = self.get_dataset_image(index)
 		img = torch.Tensor(numpy.asarray(img) / 255.0)
@@ -133,21 +137,28 @@ class TextDetectionDataset(Dataset):
 	def random_text_image(self):
 		"""Generate randomly oriented white text on a black background.  RGB image.  Can be used as a mask."""
 		# TODO: This isn't a pretty thing, but it works.
-		s = "".join(random.choice(string.ascii_letters + string.punctuation + " " * 4) for _ in range(50))
+		text = "".join(random.choice(string.ascii_letters + string.punctuation + " " * 4) for _ in range(self.random_text_length))
 		text_image = Image.new("RGB", (self.target_width, self.target_height), "black")
 		d = ImageDraw.Draw(text_image)
 		# d.line(((0, 100), (200, 100)), "gray")
 		# d.line(((100, 0), (100, 200)), "gray")
-		# Note that this translates before rotating, so our offset might be a little weird.
-		text_position = (
-			self.image_center[0] + random.randint(-self.max_text_offset[0], self.max_text_offset[0]),
-			self.image_center[1] + random.randint(-self.max_text_offset[1], self.max_text_offset[1]),
-		)
-		d.text(text_position, s, fill="white", anchor="mm", font=self.get_random_font())
-		text_image = text_image.rotate(random.randint(0, 359))
-		return text_image
+		if self.random_text_translation:
+			# Note that this translates before rotating, so our offset might be a little weird.
+			text_position = (
+				self.image_center[0] + random.randint(-self.max_text_offset[0], self.max_text_offset[0]),
+				self.image_center[1] + random.randint(-self.max_text_offset[1], self.max_text_offset[1]),
+			)
+		else:
+			text_position = self.image_center
+		d.text(text_position, text, fill="white", anchor="mm", font=self.get_random_font())
+		if self.random_text_rotation:
+			rotation = random.randint(0, 359)
+		else:
+			rotation = 0
+		text_image = text_image.rotate(rotation)
+		return text_image, text, rotation
 
-	def generate_image(self, index):
+	def generate_image_mask_pair(self, index):
 		# We assume we're starting with PIL images for everything AND that they have no text.
 		img_pil = Image.open(self.textless_images[index]).convert('RGB')
 
@@ -168,7 +179,8 @@ class TextDetectionDataset(Dataset):
 			img_pil = img_pil.resize((self.target_width, self.target_height))
 
 		# Generate some random text:
-		text_image_mask = self.random_text_image().convert('L')
+		text_image_mask, text, text_rotation = self.random_text_image()
+		text_image_mask = text_image_mask.convert('L')
 
 		# Glorious hack to make a red mask:
 		# red_channel = img_pil[0].point(lambda i: i < 100 and 255)
@@ -179,9 +191,9 @@ class TextDetectionDataset(Dataset):
 		total_pixels = 0
 		for y in range(self.target_height):
 			for x in range(self.target_width):
-				mask = text_image_mask.getpixel((x,y))
+				mask = text_image_mask.getpixel((x, y))
 				if mask > 128:
-					px = img_pil.getpixel((x,y))
+					px = img_pil.getpixel((x, y))
 					total_color[0] += px[0]
 					total_color[1] += px[1]
 					total_color[2] += px[2]
@@ -208,7 +220,57 @@ class TextDetectionDataset(Dataset):
 			img_pil.paste(text_color_block, (0,0), text_image_mask)
 
 		# Now dilate the text_image_mask to simulate highlighting a block.
-		text_image_mask = text_image_mask.filter(ImageFilter.MaxFilter(5))
+		text_image_mask = text_image_mask.filter(ImageFilter.MaxFilter(self.random_text_mask_dilation))
 
-		return img_pil, text_image_mask
-		#return img_pil, text_image_mask
+		return img_pil, text_image_mask, text, text_rotation
+
+
+class TextDetectionDataset(BaseTextDataset):
+	def __init__(self, target_width: int = 128, target_height: int = 128):
+		super(TextDetectionDataset, self).__init__(target_width, target_height)
+		self.random_text_translation = True
+		self.random_text_rotation = True
+		self.random_text_length = 12
+		self.random_text_mask_dilation = 5
+
+
+class TextRecognitionDataset(BaseTextDataset):
+	MAX_ENCODABLE_CHARACTER = (ord('~') - ord(' '))+2
+	UNKNOWN_CHAR = MAX_ENCODABLE_CHARACTER-1
+
+	def __init__(self, target_width: int = 128, target_height: int = 128):
+		super(TextRecognitionDataset, self).__init__(target_width, target_height)
+		self.random_text_translation = False
+		self.random_text_rotation = False  # Use another network to detect rotation and remove from this image.
+		self.random_text_length = 5
+		self.random_text_mask_dilation = 8  # Make the mask bigger because we're going to cut if out of the original.
+
+	@staticmethod
+	def text_to_sparse_array(text: str):
+		arr = numpy.zeros((TextRecognitionDataset.MAX_ENCODABLE_CHARACTER, len(text)), dtype=numpy.float)
+		for string_pos, character in enumerate(text):
+			ordinal_value = ord(character) - ord(' ')
+			ordinal_value = max(0, min(ordinal_value, TextRecognitionDataset.UNKNOWN_CHAR))
+			arr[ordinal_value, string_pos] = 1.0
+		return arr
+
+	@staticmethod
+	def sparse_array_to_text(arr):
+		return "".join([chr(min(x, TextRecognitionDataset.UNKNOWN_CHAR)+ord(' ')) for x in numpy.argmax(arr, axis=0)])
+
+	def get_output_dims(self):
+		# Always the same, basically.
+		return TextRecognitionDataset.MAX_ENCODABLE_CHARACTER, self.random_text_length
+
+	def __len__(self):
+		return len(self.textless_images)*10
+
+	def __getitem__(self, index):
+		img, _, text, _ = self.generate_image_mask_pair(index % len(self.textless_images))
+		text_matrix = TextRecognitionDataset.text_to_sparse_array(text)
+
+		img = torch.Tensor(numpy.asarray(img) / 255.0)
+		#mask = torch.Tensor(numpy.asarray(mask) / 255.0)
+		text = torch.Tensor(text_matrix)
+
+		return img, text

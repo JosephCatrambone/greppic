@@ -12,19 +12,18 @@ from tqdm import tqdm
 # For recording progress and showing outputs:
 from torch.utils.tensorboard import SummaryWriter
 
-#from datasets.sketch_to_picture_dataset import SketchToPictureDataset
-from dataset import TextDetectionDataset
+from dataset import TextDetectionDataset, TextRecognitionDataset
 from model import UNet
 
 #wandb.init(project="drawing_to_art", entity="josephc")
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-MODEL_NAME = "ocr_text_detect"
+MODEL_NAME = "ocr_text_recognition"
 NUM_WORKERS = 4
 LEARNING_RATE = 0.0001
-EPOCHS = 10
+EPOCHS = 100
 BATCH_SIZE = 16
-CHANGENOTES = "Going to 50/50 MSCOCO and synethic.  Dropping learning rate and increasing epochs.  Need to change loss function and maybe output channels."
+CHANGENOTES = "Starting to train text recognition rather than detection."
 
 
 def record_run_config(filename, output_dir) -> int:
@@ -58,10 +57,23 @@ def export_model(model, input_channels, input_height, input_width, filename):
 	model.train()
 
 
+def dice_loss(pred, target):
+	# Compute softmax over the classes axis, normally.
+	# Our output class is 1/0, though.  Mask/no mask.
+	#input_soft = nn.functional.softmax(input, dim=1)
+
+	# compute the actual dice score
+	dims = (1, 2, 3)
+	intersection = torch.sum(pred * target, dims)
+	cardinality = torch.sum(pred + target, dims)
+
+	dice_score = 2. * intersection / (cardinality + 1e-6)
+	return torch.mean(1. - dice_score)
+
+
 def train(dataset, model, optimizer, loss_fn, summary_writer=None, validation_set=None):
 	for epoch_idx in range(EPOCHS):
 		dataloop = tqdm(dataset)
-		total_epoch_loss = 0.0
 		for batch_idx, (data, targets) in enumerate(dataloop):
 			step = (epoch_idx * len(dataloop)) + batch_idx
 			data = data.permute(0, 3, 1, 2).to(device=DEVICE)
@@ -112,23 +124,15 @@ def train(dataset, model, optimizer, loss_fn, summary_writer=None, validation_se
 	#export_model(model, 1, 128, 128, f"models/{MODEL_NAME}_{epoch_idx}.onnx")
 
 
-def main(model_start_file=None):
+def train_detection_model(model_start_file=None):
 	model = UNet(in_channels=3, out_channels=1, feature_counts=[4, 8, 16]).to(device=DEVICE)
-	loss_fn = nn.L1Loss()
+	#loss_fn = nn.L1Loss()
+	loss_fn = dice_loss
 	optimizer = opt.Adam(model.parameters(), lr=LEARNING_RATE)
 
 	if model_start_file:
 		print(f"Restarting from checkpoint {model_start_file}")
 		model.load_state_dict(torch.load(model_start_file))
-
-	transform = transforms.Compose([
-		#transforms.Normalize((0.5,), (0.5,)),
-		transforms.RandomHorizontalFlip(),
-		transforms.RandomRotation(20),
-		transforms.Resize((256,256)),
-		transforms.RandomCrop((128, 128)),
-		#transforms.ToTensor(),  # Don't do a ToTensor conversion at the end.
-	])
 
 	dataset = TextDetectionDataset(target_width=256, target_height=256)
 	training_loader = torch.utils.data.DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=NUM_WORKERS, pin_memory=True)
@@ -152,6 +156,56 @@ def main(model_start_file=None):
 
 	# Write to file.
 	export_model(model, 3, dataset.target_height, dataset.target_width, "result_model.onnx")
+
+
+def train_recognition_model():
+	dataset = TextRecognitionDataset(target_width=256, target_height=256)
+	model = nn.Sequential(
+		nn.Conv2d(in_channels=3, out_channels=64, kernel_size=3, stride=1),
+		nn.SiLU(),
+		nn.Conv2d(in_channels=64, out_channels=128, kernel_size=3, stride=1),
+		nn.SiLU(),
+		nn.MaxPool2d(2, 2),  # 256x256 -> 128x128
+		nn.Conv2d(in_channels=128, out_channels=128, kernel_size=3, stride=1),
+		nn.SiLU(),
+		nn.Conv2d(in_channels=128, out_channels=128, kernel_size=3, stride=1),
+		nn.SiLU(),
+		nn.MaxPool2d(2, 2),  # 128x128 -> 64x64
+		nn.Conv2d(in_channels=128, out_channels=128, kernel_size=3, stride=1),
+		nn.SiLU(),
+		nn.MaxPool2d(2, 2),  # 64x64 -> 32x32
+		nn.Flatten(),
+		nn.Linear(32*32*128, 1024),
+		nn.SiLU(),
+		nn.Linear(1024, dataset.get_output_dims()[0]*dataset.get_output_dims()[1]),
+		nn.Unflatten(1, dataset.get_output_dims()),
+		nn.Softmax(),
+	)
+
+	loss_fn = nn.CrossEntropyLoss()
+	optimizer = opt.Adam(model.parameters(), lr=LEARNING_RATE)
+
+	training_loader = torch.utils.data.DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=NUM_WORKERS, pin_memory=True)
+
+	# Set up summary writer and record run stats.
+	run_number = record_run_config(MODEL_NAME, "runs")
+	os.mkdir(os.path.join("runs", str(run_number)))
+	summary_writer = SummaryWriter(f"runs/{run_number}")
+	print(f"Writing summary log to runs/{run_number}")
+
+	# Log the model architecture:
+	summary_writer.add_graph(model, torch.Tensor(numpy.zeros((1, 3, dataset.target_height, dataset.target_width))).to(DEVICE))
+
+	# Train
+	train(training_loader, model, optimizer, loss_fn, summary_writer=summary_writer)
+
+	# Write to file.
+	export_model(model, 3, dataset.target_height, dataset.target_width, "recognition_model.onnx")
+
+
+def main(model_start_file=None):
+	#train_detection_model(model_start_file)
+	train_recognition_model()
 
 
 if __name__=="__main__":

@@ -1,40 +1,87 @@
 use std::error::Error;
 use std::io::Cursor;
-use clap::Parser;
+use clap::{Arg, App};
 use tract_onnx::{self, prelude::{SimplePlan, TypedFact, Framework, Datum, InferenceFact, InferenceModelExt, tvec, TypedOp}};
 
-/// Simple program to greet a person
-#[derive(Parser, Debug)]
-#[clap(about, version, author)]
-struct Args {
-	/// Name of the person to greet
-	#[clap(short, long)]
-	name: String,
+const AUTHORS: &str = env!("CARGO_PKG_AUTHORS");
+const DESCRIPTION: &str = env!("CARGO_PKG_DESCRIPTION");
+//CARGO_PKG_HOMEPAGE
+const APP_NAME: &str = env!("CARGO_PKG_NAME");
+const VERSION: &str = env!("CARGO_PKG_VERSION");
 
-	/// Number of times to greet
-	#[clap(short, long, default_value_t = 1)]
-	count: u8,
+// Image patch input:
+const MODEL_INPUT_CHANNELS: usize = 3;
+const MODEL_INPUT_WIDTH: usize = 256;
+const MODEL_INPUT_HEIGHT: usize = 256;
 
-	/// Minimum confidence for an image to be considered to 'have' text.  Min: 0, Max: 100.
-	#[clap(short, long, default_value_t = 70)]
-	minconf: u8,
+// Text mask output:
+const MODEL_STAGE_1_CHANNELS: usize = 1;
+const MODEL_STAGE_1_WIDTH: usize = 256;
+const MODEL_STAGE_1_HEIGHT: usize = 256;
 
-	/// Overlap text scan
-	#[clap(short, long, default_value_t = false)]
-	overlap_scan: bool,
+fn main() {
+	let matches = App::new(APP_NAME)
+		.version(VERSION)
+		.author(AUTHORS)
+		.about(DESCRIPTION)
+
+		// Note: Windows doesn't usually expand globstar arguments and Linux _can_ pass literal globstar.
+
+		.arg(Arg::new("threshold")
+			.short('t')
+			.long("threshold")
+			.takes_value(true)
+			.required(false)
+			.help("The minimum detection threshold for a 'text' pixel.  0 = any pixel is a text pixel.  100 = no pixel is a text pixel.  Default = 80.")
+		)
+		.arg(Arg::new("expr")
+			.short('e')
+			.long("expression")
+			.takes_value(true)
+			.required(false)
+			.help("If specified, an expression to match inside the image files.")
+		)
+		//#[cfg(target_os = "windows")]
+		.arg(Arg::new("expandwildcard")
+			.short('g')
+			.long("expandwildcard")
+			//.takes_value(false))
+			.help("Expand wildcards using internal GLOB support for compatibility with Windows CMD.")
+		)
+		.arg(Arg::new("files")
+			.short('f')
+			.long("files")
+			.index(1)
+			.multiple_occurrences(true)
+			.takes_value(true)
+			.required(true)
+			.help("Image files to search for the given string.")
+		)
+		.get_matches();
+
+	//assert!(m.is_present("verbose"));
+	//assert_eq!(m.occurrences_of("verbose"), 3);
+	let myfiles: Vec<String> = matches.values_of_t_or_exit("files");
+	for f in myfiles {
+		println!("The file passed is: {}", &f);
+	}
+	if let Some(thresh_str) = matches.value_of("threshold") {
+		println!("Using threshold: {}", thresh_str);
+	}
+
+	//let num_str = matches.value_of("num");
+	//println!("Hello, world!");
+
+	let _model = load_detector_model();
 }
 
-// Level of verbosity, default=0 (print only text)
-//#[clap(short, long, parse(from_occurrences))]
-//verbose: usize,
-
-fn load_model() -> SimplePlan<TypedFact, Box<dyn TypedOp>, tract_onnx::prelude::Graph<TypedFact, Box<dyn TypedOp>>> {
-	let model_bytes = include_bytes!("../models/drawing_to_cat.onnx");
+fn load_detector_model() -> SimplePlan<TypedFact, Box<dyn TypedOp>, tract_onnx::prelude::Graph<TypedFact, Box<dyn TypedOp>>> {
+	let model_bytes = include_bytes!("../models/stage1_mk3_256x256.onnx");
 	let mut model_reader = Cursor::new(model_bytes);
 	tract_onnx::onnx()
 		// load the model
 		.model_for_read(&mut model_reader)//.model_for_path("models/encoder_cpu.onnx")
-		.expect("Failed to load model from models/drawing_to_animal.onnx")
+		.expect("Failed to allocate detector model -- memory corruption?")
 		// specify input type and shape
 		.with_input_fact(0, InferenceFact::dt_shape(f32::datum_type(), tvec!(1, MODEL_INPUT_CHANNELS as i64, MODEL_INPUT_HEIGHT as i64, MODEL_INPUT_WIDTH as i64)))
 		.expect("Failed to specify input shape.")
@@ -47,13 +94,6 @@ fn load_model() -> SimplePlan<TypedFact, Box<dyn TypedOp>, tract_onnx::prelude::
 		// make the model runnable and fix its inputs and outputs
 		.into_runnable()
 		.expect("Failed make model runnable.")
-}
-
-fn main() {
-	let args = Args::parse();
-	println!("Hello, world!");
-
-	let model = load_model();
 }
 
 /*

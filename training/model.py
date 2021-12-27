@@ -27,6 +27,7 @@ class DoubleConv(nn.Module):
 	def forward(self, x):
 		return self.op(x)
 
+
 class UNet(nn.Module):
 	def __init__(self, in_channels:int = 3, out_channels: int = 3, feature_counts=None):
 		super(UNet, self).__init__()
