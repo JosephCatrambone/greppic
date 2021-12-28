@@ -13,7 +13,7 @@ from tqdm import tqdm
 from torch.utils.tensorboard import SummaryWriter
 
 from dataset import TextDetectionDataset, TextRecognitionDataset
-from model import UNet
+from model import UNet, Reshape
 
 #wandb.init(project="drawing_to_art", entity="josephc")
 
@@ -23,10 +23,10 @@ NUM_WORKERS = 4
 LEARNING_RATE = 0.0001
 EPOCHS = 100
 BATCH_SIZE = 16
-CHANGENOTES = "Starting to train text recognition rather than detection."
+CHANGENOTES = "Simple activation worked better than softmax -- must already be one on the output.  Dropping to three characters in pred because the other are running off the end.  Increasing batch size."
 
 
-def record_run_config(filename, output_dir) -> int:
+def record_run_config(filename, model, output_dir) -> int:
 	"""Return the number of previous runs."""
 	previous_runs = len(glob(f"{output_dir}/{filename[:-3]}*"))
 	run_number = previous_runs+1  # One indexed.  Whatever.
@@ -35,7 +35,8 @@ def record_run_config(filename, output_dir) -> int:
 		fout.write(f"LEARNING_RATE: {LEARNING_RATE}\n")
 		fout.write(f"EPOCHS: {EPOCHS}\n")
 		fout.write(f"BATCH_SIZE: {BATCH_SIZE}\n")
-		fout.write(f"CHANGENOTES: {CHANGENOTES}")
+		fout.write(f"CHANGENOTES: {CHANGENOTES}\n")
+		fout.write(f"ARCH: {model}")
 	return run_number
 
 
@@ -76,8 +77,12 @@ def train(dataset, model, optimizer, loss_fn, summary_writer=None, validation_se
 		dataloop = tqdm(dataset)
 		for batch_idx, (data, targets) in enumerate(dataloop):
 			step = (epoch_idx * len(dataloop)) + batch_idx
+			# For Text Detection:
+			#data = data.permute(0, 3, 1, 2).to(device=DEVICE)
+			#tgt = targets.float().unsqueeze(1).to(device=DEVICE)  # NOTE: Output is greyscale, so we unsqueeze channels at 1.
+			# For Text Recognition:
 			data = data.permute(0, 3, 1, 2).to(device=DEVICE)
-			tgt = targets.float().unsqueeze(1).to(device=DEVICE)  # NOTE: Output is greyscale, so we unsqueeze channels at 1.
+			tgt = targets.float().to(device=DEVICE)
 			optimizer.zero_grad()
 
 			# Forward
@@ -91,11 +96,13 @@ def train(dataset, model, optimizer, loss_fn, summary_writer=None, validation_se
 			if summary_writer and batch_idx % 100 == 0:
 				# Save sample images.
 				input_grid = torchvision.utils.make_grid(data)
-				target_grid = torchvision.utils.make_grid(tgt)
-				output_grid = torchvision.utils.make_grid(preds)
+				#target_grid = torchvision.utils.make_grid(tgt)
+				#output_grid = torchvision.utils.make_grid(preds)
 				summary_writer.add_image("Input Grid", input_grid, step)
-				summary_writer.add_image("Target Grid", target_grid, step)
-				summary_writer.add_image("Output Grid", output_grid, step)
+				#summary_writer.add_image("Target Grid", target_grid, step)
+				#summary_writer.add_image("Output Grid", output_grid, step)
+				summary_writer.add_text("Target Text", TextRecognitionDataset.sparse_array_to_text(tgt.cpu().detach().numpy()[0]))
+				summary_writer.add_text("Output Text", TextRecognitionDataset.sparse_array_to_text(preds.cpu().detach().numpy()[0]))
 
 				validation_loss = 0
 				if validation_set:
@@ -138,7 +145,7 @@ def train_detection_model(model_start_file=None):
 	training_loader = torch.utils.data.DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=NUM_WORKERS, pin_memory=True)
 
 	# Set up summary writer and record run stats.
-	run_number = record_run_config(MODEL_NAME, "runs")
+	run_number = record_run_config(MODEL_NAME, model, "runs")
 	os.mkdir(os.path.join("runs", str(run_number)))
 	summary_writer = SummaryWriter(f"runs/{run_number}")
 	print(f"Writing summary log to runs/{run_number}")
@@ -159,28 +166,31 @@ def train_detection_model(model_start_file=None):
 
 
 def train_recognition_model():
-	dataset = TextRecognitionDataset(target_width=256, target_height=256)
+	dataset = TextRecognitionDataset(target_width=64, target_height=64)
 	model = nn.Sequential(
-		nn.Conv2d(in_channels=3, out_channels=64, kernel_size=3, stride=1),
-		nn.SiLU(),
-		nn.Conv2d(in_channels=64, out_channels=128, kernel_size=3, stride=1),
-		nn.SiLU(),
-		nn.MaxPool2d(2, 2),  # 256x256 -> 128x128
-		nn.Conv2d(in_channels=128, out_channels=128, kernel_size=3, stride=1),
-		nn.SiLU(),
-		nn.Conv2d(in_channels=128, out_channels=128, kernel_size=3, stride=1),
-		nn.SiLU(),
-		nn.MaxPool2d(2, 2),  # 128x128 -> 64x64
-		nn.Conv2d(in_channels=128, out_channels=128, kernel_size=3, stride=1),
-		nn.SiLU(),
-		nn.MaxPool2d(2, 2),  # 64x64 -> 32x32
+		nn.Conv2d(in_channels=3, out_channels=64, kernel_size=3, stride=1, padding=1),  # 64x64x64
+		nn.SiLU(inplace=True),
+		nn.Conv2d(in_channels=64, out_channels=128, kernel_size=3, stride=1, padding=1),  # 64x64x128
+		nn.SiLU(inplace=True),
+		nn.MaxPool2d(2, 2),  # 64x64x128 -> 32x32x128
+
+		nn.Conv2d(in_channels=128, out_channels=256, kernel_size=3, stride=1, padding=1),  # 32x32x128
+		nn.SiLU(inplace=True),
+		nn.Conv2d(in_channels=256, out_channels=256, kernel_size=3, stride=1, padding=1),  # 32x32x256
+		nn.SiLU(inplace=True),
+		nn.MaxPool2d(2, 2),  # 32x32x256 -> 16x16x256
+
 		nn.Flatten(),
-		nn.Linear(32*32*128, 1024),
-		nn.SiLU(),
-		nn.Linear(1024, dataset.get_output_dims()[0]*dataset.get_output_dims()[1]),
-		nn.Unflatten(1, dataset.get_output_dims()),
-		nn.Softmax(),
+		nn.Linear(in_features=16*16*256, out_features=1024),  # This should be 16x16x256, but it's 43264.
+		nn.SiLU(inplace=True),
+		nn.Linear(in_features=1024, out_features=dataset.get_output_dims()[0]*dataset.get_output_dims()[1]),
+		Reshape(-1, dataset.get_output_dims()[0], dataset.get_output_dims()[1]),
+		#nn.Unflatten(1, dataset.get_output_dims()),
+		#nn.Softmax(dim=1),
+		nn.SiLU(inplace=True),
 	)
+	print(f"Model: {model}")
+	model.to(DEVICE)
 
 	loss_fn = nn.CrossEntropyLoss()
 	optimizer = opt.Adam(model.parameters(), lr=LEARNING_RATE)
@@ -188,7 +198,7 @@ def train_recognition_model():
 	training_loader = torch.utils.data.DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=NUM_WORKERS, pin_memory=True)
 
 	# Set up summary writer and record run stats.
-	run_number = record_run_config(MODEL_NAME, "runs")
+	run_number = record_run_config(MODEL_NAME, model, "runs")
 	os.mkdir(os.path.join("runs", str(run_number)))
 	summary_writer = SummaryWriter(f"runs/{run_number}")
 	print(f"Writing summary log to runs/{run_number}")

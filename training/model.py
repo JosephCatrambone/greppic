@@ -10,6 +10,17 @@ def assert_power_of_two(n: int):
 	assert 2**int(math.log(n)/math.log(2)) == n
 
 
+class Reshape(nn.Module):
+	# Resize to the target shape, auto-inferring the -1 dimension from the rest.
+
+	def __init__(self, *shape):
+		super(Reshape, self).__init__()
+		self.shape = shape
+
+	def forward(self, x):
+		return x.view(*self.shape)
+
+
 class DoubleConv(nn.Module):
 	def __init__(self, in_channels: int, out_channels: int):
 		super(DoubleConv, self).__init__()
