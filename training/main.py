@@ -18,12 +18,12 @@ from model import UNet, Reshape
 #wandb.init(project="drawing_to_art", entity="josephc")
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-MODEL_NAME = "ocr_text_recognition"
+MODEL_NAME = "ocr_text_detection"
 NUM_WORKERS = 4
 LEARNING_RATE = 0.0001
 EPOCHS = 100
 BATCH_SIZE = 16
-CHANGENOTES = "Simple activation worked better than softmax -- must already be one on the output.  Dropping to three characters in pred because the other are running off the end.  Increasing batch size."
+CHANGENOTES = "Working on the detection script again with a UNet model."
 
 
 def record_run_config(filename, model, output_dir) -> int:
@@ -78,11 +78,11 @@ def train(dataset, model, optimizer, loss_fn, summary_writer=None, validation_se
 		for batch_idx, (data, targets) in enumerate(dataloop):
 			step = (epoch_idx * len(dataloop)) + batch_idx
 			# For Text Detection:
-			#data = data.permute(0, 3, 1, 2).to(device=DEVICE)
-			#tgt = targets.float().unsqueeze(1).to(device=DEVICE)  # NOTE: Output is greyscale, so we unsqueeze channels at 1.
-			# For Text Recognition:
 			data = data.permute(0, 3, 1, 2).to(device=DEVICE)
-			tgt = targets.float().to(device=DEVICE)
+			tgt = targets.float().unsqueeze(1).to(device=DEVICE)  # NOTE: Output is greyscale, so we unsqueeze channels at 1.
+			# For Text Recognition:
+			#data = data.permute(0, 3, 1, 2).to(device=DEVICE)
+			#tgt = targets.float().to(device=DEVICE)
 			optimizer.zero_grad()
 
 			# Forward
@@ -214,8 +214,8 @@ def train_recognition_model():
 
 
 def main(model_start_file=None):
-	#train_detection_model(model_start_file)
-	train_recognition_model()
+	train_detection_model(model_start_file)
+	#train_recognition_model()
 
 
 if __name__=="__main__":

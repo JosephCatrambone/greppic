@@ -259,10 +259,10 @@ class TextRecognitionDataset(BaseTextDataset):
 	def sparse_array_to_text(arr):
 		if len(arr.shape) == 4:
 			# 4D array means batch, channel, height, width.
-			return ["".join([chr(min(x, TextRecognitionDataset.UNKNOWN_CHAR)+ord(' ')) for x in numpy.argmax(arr[i,:,:,:], axis=1)]) for i in arr.shape[0]]
+			return ["".join([chr(min(x, TextRecognitionDataset.UNKNOWN_CHAR)+ord(' ')) for x in numpy.argmax(arr[i,j,:,:], axis=1)] for j in range(arr.shape[i])) for i in range(arr.shape[0])]
 		elif len(arr.shape) == 3:
 			# 3D array means batch, channel, height.
-			return ["".join([chr(min(x, TextRecognitionDataset.UNKNOWN_CHAR)+ord(' ')) for x in numpy.argmax(arr[i,:,:], axis=1)]) for i in arr.shape[0]]
+			return ["".join([chr(min(x, TextRecognitionDataset.UNKNOWN_CHAR)+ord(' ')) for x in numpy.argmax(arr[i,:,:], axis=1)]) for i in range(arr.shape[0])]
 		else: # height, width?
 			return "".join([chr(min(x, TextRecognitionDataset.UNKNOWN_CHAR)+ord(' ')) for x in numpy.argmax(arr, axis=0)])
 
